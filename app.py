@@ -523,16 +523,16 @@ def show_topics(df):
         return
 
     cols = st.columns(min(5, len(topics)))
-    max_mentions = max(int(topics["mentions"].max()), 1)
+    max_mentions = max(int(topics["Mentions"].max()), 1)
 
     for i, (_, row) in enumerate(topics.head(5).iterrows()):
         with cols[i]:
-            width = int((row["mentions"] / max_mentions) * 100)
+            width = int((row["Mentions"] / max_mentions) * 100)
             st.markdown(
                 f"""<div class="topic">
                     <div class="topic-rank">#{i+1} Topic signal</div>
-                    <div class="topic-name">{str(row["topic"]).title()}</div>
-                    <div class="topic-meta">{int(row["mentions"])} title mentions</div>
+                    <div class="topic-name">{str(row["Topic"]).title()}</div>
+                    <div class="topic-meta">{int(row["Mentions"])} title mentions</div>
                     <div class="progress"><span style="width:{width}%"></span></div>
                 </div>""",
                 unsafe_allow_html=True,
