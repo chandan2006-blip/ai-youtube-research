@@ -4,6 +4,7 @@ import pandas as pd
 from datetime import datetime
 from pathlib import Path
 import io
+import html
 
 # Backend
 from main import (
@@ -466,6 +467,26 @@ div[data-testid="stDataFrame"] {
     border-radius:13px;
     overflow:hidden;
 }
+
+.niche-banner {
+    margin: 18px 0 10px;
+    padding: 13px 16px;
+    border: 1px solid rgba(124,108,255,.28);
+    border-radius: 12px;
+    background: linear-gradient(135deg, rgba(124,108,255,.14), rgba(35,211,238,.05));
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:16px;
+}
+.niche-banner strong {
+    color:#f5f7fb;
+    font-size:1rem;
+}
+.niche-banner-meta {
+    color:#8f9bb0;
+    font-size:.72rem;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -523,57 +544,124 @@ def show_topics(df):
         return
 
     cols = st.columns(min(5, len(topics)))
-    max_mentions = max(int(topics["Mentions"].max()), 1)
+    max_mentions = max(int(topics["mentions"].max()), 1)
 
     for i, (_, row) in enumerate(topics.head(5).iterrows()):
         with cols[i]:
-            width = int((row["Mentions"] / max_mentions) * 100)
+            width = int((row["mentions"] / max_mentions) * 100)
             st.markdown(
                 f"""<div class="topic">
                     <div class="topic-rank">#{i+1} Topic signal</div>
-                    <div class="topic-name">{str(row["Topic"]).title()}</div>
-                    <div class="topic-meta">{int(row["Mentions"])} title mentions</div>
+                    <div class="topic-name">{str(row["topic"]).title()}</div>
+                    <div class="topic-meta">{int(row["mentions"])} title mentions</div>
                     <div class="progress"><span style="width:{width}%"></span></div>
                 </div>""",
                 unsafe_allow_html=True,
             )
 
 
-def show_videos(df, limit=10):
+def show_videos(df, limit=10, title_prefix=""):
+    """Render video cards directly in the dashboard with clickable YouTube links."""
     if df is None or df.empty:
-        st.info("No videos found for the current filters.")
+        st.info("No videos found for this section.")
         return
 
-    rows = df.sort_values(
-        ["opportunity", "views_per_hour"],
-        ascending=False
-    ).head(limit)
+    sort_cols = [c for c in ["opportunity", "views_per_hour", "views"] if c in df.columns]
+    rows = df.sort_values(sort_cols, ascending=False).head(limit) if sort_cols else df.head(limit)
 
     for _, row in rows.iterrows():
-        score = int(row.get("opportunity", 0))
-        link = row.get("link", "#")
-        title = str(row.get("title", "Untitled"))
-        channel = str(row.get("channel", "Unknown"))
-        country = str(row.get("channel_country", "Unknown"))
-        lang = str(row.get("language", "Unknown"))
+        score = int(float(row.get("opportunity", row.get("trend_score", 0)) or 0))
+        link = str(row.get("link", "#"))
+        title = html.escape(str(row.get("title", "Untitled")))
+        channel = html.escape(str(row.get("channel", "Unknown")))
+        country = html.escape(str(row.get("channel_country", "Unknown")))
+        lang = html.escape(str(row.get("language", "Unknown")))
+        niche = html.escape(str(row.get("niche", "Other")))
+
+        views = format_number(row.get("views", 0))
+        vph = format_number(row.get("views_per_hour", 0))
+        likes = format_number(row.get("likes", 0))
+        comments = format_number(row.get("comments", 0))
+        engagement = float(row.get("engagement", 0) or 0)
 
         st.markdown(
             f"""<div class="video">
                 <div class="video-title">{title}</div>
-                <div class="video-channel">📺 {channel} &nbsp; · &nbsp; 🌎 {country} &nbsp; · &nbsp; 🔤 {lang}</div>
+                <div class="video-channel">📺 {channel} &nbsp; · &nbsp; 🏷️ {niche} &nbsp; · &nbsp; 🌎 {country} &nbsp; · &nbsp; 🔤 {lang}</div>
                 <div class="video-stats">
-                    👁 {format_number(row["views"])}
-                    &nbsp;&nbsp; ⚡ {format_number(row["views_per_hour"])}/hr
-                    &nbsp;&nbsp; ❤️ {format_number(row["likes"])}
-                    &nbsp;&nbsp; 💬 {format_number(row["comments"])}
-                    &nbsp;&nbsp; 📊 {float(row["engagement"]):.1f}%
+                    👁 {views}
+                    &nbsp;&nbsp; ⚡ {vph}/hr
+                    &nbsp;&nbsp; ❤️ {likes}
+                    &nbsp;&nbsp; 💬 {comments}
+                    &nbsp;&nbsp; 📊 {engagement:.1f}%
                 </div>
-                <div class="score-label">Opportunity score <span class="score-value">{score}/99</span></div>
-                <div class="progress"><span style="width:{score}%"></span></div>
-                <a class="watch" href="{link}" target="_blank">▶ Watch on YouTube</a>
+                <div class="score-label">Trend score <span class="score-value">{score}/100</span></div>
+                <div class="progress"><span style="width:{min(max(score,0),100)}%"></span></div>
+                <a class="watch" href="{html.escape(link, quote=True)}" target="_blank" rel="noopener noreferrer">▶ Watch directly on YouTube ↗</a>
             </div>""",
             unsafe_allow_html=True,
         )
+
+
+def show_videos_by_niche(df, limit_per_niche=10, section_title="Videos by niche"):
+    """Group discovered videos by detected niche and render each niche inline."""
+    if df is None or df.empty or "niche" not in df.columns:
+        st.info("No niche-level videos available.")
+        return
+
+    st.markdown(
+        f'<div class="section-head"><div><div class="section-title">🏷️ {section_title}</div><div class="section-desc">Each niche is shown separately with its trending videos and direct YouTube links.</div></div></div>',
+        unsafe_allow_html=True,
+    )
+
+    grouped = df.groupby("niche", dropna=False)
+    order = (
+        grouped["views_per_hour"].mean()
+        .sort_values(ascending=False)
+        .index
+        .tolist()
+    )
+
+    for niche in order:
+        group = df[df["niche"].fillna("Other") == niche].copy()
+        total_views = int(group["views"].sum()) if "views" in group else 0
+        avg_vph = float(group["views_per_hour"].mean()) if "views_per_hour" in group else 0
+
+        st.markdown(
+            f"""<div class="niche-banner">
+                <div><strong>🔥 {html.escape(str(niche))}</strong></div>
+                <div class="niche-banner-meta">{len(group)} videos · {format_number(total_views)} total views · {format_number(avg_vph)} avg views/hour</div>
+            </div>""",
+            unsafe_allow_html=True,
+        )
+        show_videos(group, limit_per_niche)
+
+
+def show_requested_niche_results(results_by_niche, limit_per_niche=20):
+    """Render Niche Finder results grouped by the exact niche the user scanned."""
+    if not results_by_niche:
+        st.info("No videos found for the selected niches.")
+        return
+
+    st.markdown(
+        '<div class="section-head"><div><div class="section-title">🎯 Videos found inside each niche</div><div class="section-desc">Every scanned niche has its own video list. Click any button to open the video directly on YouTube.</div></div></div>',
+        unsafe_allow_html=True,
+    )
+
+    for niche, group in results_by_niche:
+        if group is None or group.empty:
+            continue
+
+        total_views = int(group["views"].sum()) if "views" in group else 0
+        avg_vph = float(group["views_per_hour"].mean()) if "views_per_hour" in group else 0
+        st.markdown(
+            f"""<div class="niche-banner">
+                <div><strong>🎯 {html.escape(str(niche))}</strong></div>
+                <div class="niche-banner-meta">{len(group)} videos · {format_number(total_views)} total views · {format_number(avg_vph)} avg views/hour</div>
+            </div>""",
+            unsafe_allow_html=True,
+        )
+        show_videos(group, limit_per_niche)
 
 
 def export_buttons(df, prefix="signalforge_results"):
@@ -780,7 +868,7 @@ if mode == "Dashboard":
 # ============================================================
 elif mode == "Niche Finder":
     st.markdown(
-        '<div class="tool-header"><div class="tool-title">🔎 Niche Finder</div><div class="tool-desc">Compare selected niches using recent YouTube upload velocity.</div></div>',
+        '<div class="tool-header"><div class="tool-title">🔎 Niche Finder</div><div class="tool-desc">Scan niches and immediately see the videos found inside each niche — with direct YouTube links.</div></div>',
         unsafe_allow_html=True,
     )
 
@@ -794,7 +882,7 @@ elif mode == "Niche Finder":
     with c1:
         scan = st.button("🚀 Scan Niches", type="primary", use_container_width=True)
     with c2:
-        st.caption("Tip: keep the list to 3–6 niches to control API usage.")
+        st.caption("Each niche gets its own video list + direct YouTube links.")
 
     if scan:
         api_key = selected_key(data_source, own_api_key)
@@ -808,6 +896,7 @@ elif mode == "Niche Finder":
             ))[:6]
 
             rows = []
+            video_groups = []
             progress = st.progress(0)
 
             for i, niche in enumerate(niche_list):
@@ -817,19 +906,24 @@ elif mode == "Niche Finder":
                         api_key,
                         region,
                         window,
-                        min(results_limit, 20),
+                        min(results_limit, 50),
                     )
 
                 if error:
                     st.error(f"{niche}: {error}")
                 elif data is not None and not data.empty:
+                    group = data.copy()
+                    group["niche_query"] = niche
+                    # Keep the requested niche visible while preserving the automatically detected niche.
+                    group["niche"] = niche
+                    video_groups.append((niche, group))
                     rows.append({
                         "Niche": niche,
-                        "Videos found": len(data),
-                        "Total views": int(data["views"].sum()),
-                        "Avg views/hour": float(data["views_per_hour"].mean()),
-                        "Avg engagement": float(data["engagement"].mean()),
-                        "Opportunity": float(data["opportunity"].mean()),
+                        "Videos found": len(group),
+                        "Total views": int(group["views"].sum()),
+                        "Avg views/hour": float(group["views_per_hour"].mean()),
+                        "Avg engagement": float(group["engagement"].mean()),
+                        "Opportunity": float(group["opportunity"].mean()),
                     })
 
                 progress.progress((i + 1) / max(len(niche_list), 1))
@@ -839,18 +933,25 @@ elif mode == "Niche Finder":
                     "Avg views/hour",
                     ascending=False,
                 )
-                st.session_state.last_df = result
+                st.session_state.last_df = pd.concat(
+                    [g for _, g in video_groups], ignore_index=True
+                ) if video_groups else pd.DataFrame()
 
                 st.markdown('<div class="section-title">📊 Niche comparison</div>', unsafe_allow_html=True)
                 display = result.copy()
                 display["Total views"] = display["Total views"].map(format_number)
                 display["Avg views/hour"] = display["Avg views/hour"].map(format_number)
                 display["Avg engagement"] = display["Avg engagement"].map(lambda x: f"{x:.1f}%")
-                display["Opportunity"] = display["Opportunity"].map(lambda x: f"{x:.0f}/99")
+                display["Opportunity"] = display["Opportunity"].map(lambda x: f"{x:.0f}/100")
                 st.dataframe(display, use_container_width=True, hide_index=True)
 
                 chart = result.set_index("Niche")[["Avg views/hour"]]
                 st.bar_chart(chart, height=300)
+
+                # IMPORTANT: render all videos directly on the dashboard.
+                show_requested_niche_results(video_groups, min(results_limit, 50))
+            else:
+                st.warning("No videos were found for the selected niches in the current region/time window.")
 
 # ============================================================
 # TREND FINDER / TREND DISCOVERY
@@ -911,42 +1012,15 @@ elif mode == "Trend Finder":
                         ns = ns.rename(columns={"niche":"Niche", "Videos":"Videos", "Total_Views":"Total views", "Avg_Views_Hour":"Avg views/hour"})
                         st.dataframe(ns, use_container_width=True, hide_index=True)
 
+                    # Show the actual videos under each detected niche, not only the summary table.
+                    show_videos_by_niche(df, min(results_limit, 10), "Trending videos by niche")
+
                     st.markdown(
-                        '<div class="section-head"><div><div class="section-title">🔥 Trending videos</div><div class="section-desc">Sorted by the research trend score.</div></div></div>',
+                        '<div class="section-head"><div><div class="section-title">🔥 All trending videos</div><div class="section-desc">Complete result set sorted by the research trend score. Every card has a direct YouTube link.</div></div></div>',
                         unsafe_allow_html=True,
                     )
                     show_videos(df, results_limit)
 
-                    st.markdown(
-                        '<div class="section-head"><div><div class="section-title">📊 Full results</div><div class="section-desc">Exportable dataset with views, velocity, engagement and direct links.</div></div></div>',
-                        unsafe_allow_html=True,
-                    )
-                    cols = [
-                        "title", "niche", "channel", "views", "views_per_hour",
-                        "engagement", "age_hours", "trend_score",
-                        "opportunity_label", "link"
-                    ]
-                    available = [c for c in cols if c in df.columns]
-                    st.dataframe(
-                        df[available],
-                        use_container_width=True,
-                        hide_index=True,
-                    )
-
-                    # Downloads
-                    try:
-                        csv_bytes = export_csv(df, None)
-                    except TypeError:
-                        csv_bytes = df.to_csv(index=False).encode("utf-8")
-                    if isinstance(csv_bytes, str):
-                        csv_bytes = csv_bytes.encode("utf-8")
-
-                    st.download_button(
-                        "⬇️ Download CSV",
-                        data=csv_bytes,
-                        file_name="youtube_trending_results.csv",
-                        mime="text/csv",
-                    )
 
 # ============================================================
 # KEYWORD SCANNER
