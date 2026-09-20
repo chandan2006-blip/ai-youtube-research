@@ -388,7 +388,24 @@ def add_video_format_fields(df: pd.DataFrame, videos: list) -> pd.DataFrame:
             duration_map[video_id] = seconds
 
     result = df.copy()
-    result["duration_seconds"] = result["video_id"].map(duration_map).fillna(0).astype(int)
+
+    # Support both backend/export naming and frontend naming.
+    # build_video_dataframe creates "Video ID" first and adds the lowercase
+    # "video_id" alias later, so duration enrichment must work with either.
+    id_col = None
+    for candidate in ("video_id", "Video ID", "id"):
+        if candidate in result.columns:
+            id_col = candidate
+            break
+
+    if id_col is None:
+        # Keep the pipeline alive instead of raising KeyError.
+        result["duration_seconds"] = 0
+    else:
+        result["duration_seconds"] = (
+            result[id_col].map(duration_map).fillna(0).astype(int)
+        )
+
     result["duration_minutes"] = (result["duration_seconds"] / 60).round(1)
     result["content_type"] = result["duration_seconds"].apply(
         lambda x: "Long-form" if x >= 240 else "Short / short-form"
