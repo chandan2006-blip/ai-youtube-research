@@ -543,17 +543,30 @@ def show_topics(df):
         st.info("No topic signals available yet.")
         return
 
+    # Backend returns title-cased column names (Topic / Mentions).
+    # Normalize here so the dashboard never crashes because of column casing.
+    topic_col = next((c for c in ["Topic", "topic"] if c in topics.columns), None)
+    mentions_col = next((c for c in ["Mentions", "mentions"] if c in topics.columns), None)
+
+    if topic_col is None or mentions_col is None:
+        st.info("Topic signals are unavailable for this result set.")
+        return
+
+    topics = topics.copy()
+    topics[mentions_col] = pd.to_numeric(topics[mentions_col], errors="coerce").fillna(0)
     cols = st.columns(min(5, len(topics)))
-    max_mentions = max(int(topics["mentions"].max()), 1)
+    max_mentions = max(int(topics[mentions_col].max()), 1)
 
     for i, (_, row) in enumerate(topics.head(5).iterrows()):
         with cols[i]:
-            width = int((row["mentions"] / max_mentions) * 100)
+            mentions = int(row[mentions_col])
+            width = int((mentions / max_mentions) * 100)
+            topic_name = html.escape(str(row[topic_col]).title())
             st.markdown(
                 f"""<div class="topic">
                     <div class="topic-rank">#{i+1} Topic signal</div>
-                    <div class="topic-name">{str(row["topic"]).title()}</div>
-                    <div class="topic-meta">{int(row["mentions"])} title mentions</div>
+                    <div class="topic-name">{topic_name}</div>
+                    <div class="topic-meta">{mentions} title mentions</div>
                     <div class="progress"><span style="width:{width}%"></span></div>
                 </div>""",
                 unsafe_allow_html=True,
