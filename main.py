@@ -349,6 +349,66 @@ def search_channel(
 
 
 # ============================================================
+# VIDEO FORMAT HELPERS
+# ============================================================
+
+def parse_iso8601_duration_seconds(value: str) -> int:
+    """Convert a YouTube ISO-8601 duration (PT1H2M3S) to seconds."""
+    if not value:
+        return 0
+    match = re.fullmatch(r"P(?:([0-9]+)D)?T(?:([0-9]+)H)?(?:([0-9]+)M)?(?:([0-9]+)S)?", value)
+    if not match:
+        return 0
+    days, hours, minutes, seconds = [int(x or 0) for x in match.groups()]
+    return days * 86400 + hours * 3600 + minutes * 60 + seconds
+
+
+def is_long_form_video(video: dict, min_seconds: int = 240) -> bool:
+    """Treat videos >= 4 minutes as long-form for creator research.
+
+    YouTube's `videoDuration=long` means >20 minutes, which is too restrictive
+    for this product. We therefore use contentDetails.duration and classify
+    videos of 4+ minutes as long-form; Shorts are normally <=3 minutes.
+    """
+    duration = video.get("contentDetails", {}).get("duration", "")
+    return parse_iso8601_duration_seconds(duration) >= min_seconds
+
+
+def add_video_format_fields(df: pd.DataFrame, videos: list) -> pd.DataFrame:
+    """Attach duration/format metadata to a dataframe using video IDs."""
+    if df is None or df.empty:
+        return df
+
+    duration_map = {}
+    for video in videos or []:
+        video_id = video.get("id", "")
+        duration_raw = video.get("contentDetails", {}).get("duration", "")
+        seconds = parse_iso8601_duration_seconds(duration_raw)
+        if video_id:
+            duration_map[video_id] = seconds
+
+    result = df.copy()
+    result["duration_seconds"] = result["video_id"].map(duration_map).fillna(0).astype(int)
+    result["duration_minutes"] = (result["duration_seconds"] / 60).round(1)
+    result["content_type"] = result["duration_seconds"].apply(
+        lambda x: "Long-form" if x >= 240 else "Short / short-form"
+    )
+    result["is_long_form"] = result["duration_seconds"] >= 240
+    return result
+
+
+def prioritize_long_form(df: pd.DataFrame) -> pd.DataFrame:
+    """Put long-form videos first while keeping Shorts available below them."""
+    if df is None or df.empty or "is_long_form" not in df.columns:
+        return df
+    result = df.copy()
+    result["_long_priority"] = result["is_long_form"].astype(int)
+    sort_cols = [c for c in ["_long_priority", "trend_score", "views_per_hour", "views"] if c in result.columns]
+    result = result.sort_values(sort_cols, ascending=[False] * len(sort_cols)).drop(columns=["_long_priority"], errors="ignore")
+    return result.reset_index(drop=True)
+
+
+# ============================================================
 # VIDEO DATA
 # ============================================================
 
@@ -678,6 +738,10 @@ def build_video_dataframe(
         .reset_index(drop=True)
     )
 
+    # Duration is available from contentDetails and lets the frontend
+    # prefer long-form videos without losing Shorts completely.
+    result = add_video_format_fields(result, videos)
+
     # --------------------------------------------------------
     # Frontend compatibility aliases
     # --------------------------------------------------------
@@ -704,6 +768,8 @@ def build_video_dataframe(
         "Opportunity": "opportunity_label",
         "Video ID": "video_id",
         "URL": "link",
+        "Content Type": "content_type",
+        "Duration (min)": "duration_minutes",
     }
 
     for source_col, alias_col in aliases.items():
@@ -769,7 +835,8 @@ def search_trending_candidates(
         for item in response.get("items", [])
         if item.get("id", {}).get("videoId")
     ]
-    return get_video_details(ids, api_key)
+    videos = get_video_details(ids, api_key)
+    return videos
 
 
 def discover_trending(
@@ -834,6 +901,10 @@ def discover_trending(
         df = build_video_dataframe(windowed, region_code, api_key)
         if df.empty:
             return df, None
+
+        # Long-form is preferred for creator research, but Shorts remain in
+        # the result set when they are among the strongest signals.
+        df = prioritize_long_form(df)
 
         # Window-aware scoring. Avoid treating old high-view videos as
         # stronger trends simply because their lifetime view count is large.
@@ -909,9 +980,14 @@ def trend_finder(
             hours,
             region_code,
             api_key,
-            min(results_limit, 50),
+            50,
         )
         df = build_video_dataframe(videos, region_code, api_key)
+        if df.empty:
+            return df, None
+
+        # Prefer long-form (>=4 min) while keeping Shorts available.
+        df = prioritize_long_form(df)
         return df.head(results_limit), None
     except HttpError as e:
         return pd.DataFrame(), api_error_message(e)
